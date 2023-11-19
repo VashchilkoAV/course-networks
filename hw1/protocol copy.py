@@ -1,7 +1,6 @@
 import socket
 import os
 import math
-import select
 
 
 class UDPBasedProtocol:
@@ -23,13 +22,13 @@ GLOBAL_N_REPEAT = 10
 
 class TCPPacket():
     TYPE_LEN = 1
-    ID_LEN = 20
+    ID_LEN = 10
     SEQ_LEN = 4
     PACKET_LEN = GLOBAL_PACKET_LEN
     DATA_LEN = PACKET_LEN - TYPE_LEN - ID_LEN - SEQ_LEN
 
-    def __init__(self, type, seq, message_id=None, data=None):
-        self.message_id = os.urandom(self.ID_LEN) if message_id is None else message_id
+    def __init__(self, type, seq, message_id, data=None):
+        self.message_id = message_id
         self.type = type
         self.seq = seq
 
@@ -38,10 +37,6 @@ class TCPPacket():
 
     def __str__(self):
         return f"TYPE={self.type}, SEQ={self.seq}, ID={self.message_id}, DATA len={len(self.data)}"
-
-
-    def reshuffle_id(self):
-        self.message_id = os.urandom(self.ID_LEN)
 
 
     def to_bytes(self):
@@ -63,14 +58,16 @@ class TCPPacket():
         )
     
     @classmethod
-    def divide(cls, data, start_seq):
+    def divide(cls, data, start_seq, message_id):
         n_parts = math.ceil(len(data) / cls.DATA_LEN)
         ret = []
         current_seq = start_seq
         for i in range(n_parts):
             packet_data = data[i * cls.DATA_LEN: (i + 1) * cls.DATA_LEN]
-            ret.append(cls(type=b'D', data=packet_data, seq=current_seq))
+            ret.append(cls(type=b'D', data=packet_data, seq=current_seq, message_id=message_id))
             current_seq += len(packet_data)
+
+        #ret.append(cls(type=b'F', seq=current_seq, message_id=message_id))
 
         return ret
 
@@ -79,74 +76,50 @@ class MyTCPProtocol(UDPBasedProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.udp_socket.settimeout(0.005)
-        self.sender_seen_ids = set()
-        self.receiver_seen_ids = set()
-
-    
-    def sendto(self, data):
-        return super().sendto(data)
-    
-    def recvfrom(self, n, is_receiver=False):
-        while True:
-            packet = TCPPacket.from_bytes(super().recvfrom(n))
-            if is_receiver and packet.message_id in self.receiver_seen_ids or not is_receiver and packet.message_id in self.sender_seen_ids:
-                continue
-            else:
-                return packet
+        self.seen_ids = set()
 
     def send(self, data: bytes):
         print(f'[SENDER]: START SEND: {len(data)}')
         current_seq = 0
         expected_seq = 0
+        message_id = os.urandom(TCPPacket.ID_LEN)
 
         ############# SYN #############
-        syn_packet = TCPPacket(type=b'S', seq=current_seq)
+        syn_packet = TCPPacket(type=b'S', seq=current_seq, message_id=message_id)
+        syn_packet_bytes = syn_packet.to_bytes()
         expected_seq += 1
 
         not_received = True
         while not_received:
             not_received = False
             try:
-                syn_packet.reshuffle_id()
-                syn_packet_bytes = syn_packet.to_bytes()
                 assert self.sendto(syn_packet_bytes) == len(syn_packet_bytes)
                 # print(f'[SENDER]: sent {syn_packet}')
-                ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                #ack_packet = TCPPacket.from_bytes(ack)
-                if ack_packet.message_id in self.sender_seen_ids:
-                    print('[SENDER]: duplicate')
-                    not_received = True
-                    continue
-                self.sender_seen_ids.add(ack_packet.message_id)
+                ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                ack_packet = TCPPacket.from_bytes(ack)
                 # print(f'[SENDER]: received ACK {ack_packet}')
-                if ack_packet.type != b'A' or ack_packet.seq != expected_seq:
+                if ack_packet.type != b'A' or ack_packet.message_id != message_id or ack_packet.seq != expected_seq:
                     not_received = True
             except TimeoutError:
                 not_received = True
         current_seq = expected_seq
 
         ############# DATA #############
-        packets = TCPPacket.divide(data, start_seq=current_seq)
+        packets = TCPPacket.divide(data, start_seq=current_seq, message_id=message_id)
         for packet in packets:
             expected_seq += len(packet.data)
+            packet_bytes = packet.to_bytes()
 
             not_received = True
             while not_received:
                 not_received = False
                 try:
-                    packet.reshuffle_id()
-                    packet_bytes = packet.to_bytes()
                     assert self.sendto(packet_bytes) == len(packet_bytes)
                     # print(f'[SENDER]: sent {packet}')
-                    ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                    #ack_packet = TCPPacket.from_bytes(ack)
-                    if ack_packet.message_id in self.sender_seen_ids:
-                        print('[SENDER]: duplicate')
-                        not_received = True
-                        continue
-                    self.sender_seen_ids.add(ack_packet.message_id)
+                    ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                    ack_packet = TCPPacket.from_bytes(ack)
                     # print(f'[SENDER]: received ACK {ack_packet}')
-                    if ack_packet.type != b'A' or ack_packet.seq != expected_seq:
+                    if ack_packet.type != b'A' or ack_packet.message_id != packet.message_id or ack_packet.seq != expected_seq:
                         not_received = True
                 except TimeoutError:
                     not_received = True
@@ -154,26 +127,20 @@ class MyTCPProtocol(UDPBasedProtocol):
             current_seq = expected_seq
 
         ############# FIN #############
-        fin_packet = TCPPacket(type=b'F', seq=current_seq)
+        fin_packet = TCPPacket(type=b'F', seq=current_seq, message_id=message_id)
+        fin_packet_bytes = fin_packet.to_bytes()
         expected_seq += 1
 
         not_received = True
         while not_received:
             not_received = False
             try:
-                fin_packet.reshuffle_id()
-                fin_packet_bytes = fin_packet.to_bytes()
                 assert self.sendto(fin_packet_bytes) == len(fin_packet_bytes)
                 # print(f'[SENDER]: sent {fin_packet}')
-                ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                #ack_packet = TCPPacket.from_bytes(ack)
-                if ack_packet.message_id in self.sender_seen_ids:
-                    print('[SENDER]: duplicate')
-                    not_received = True
-                    continue
-                self.sender_seen_ids.add(ack_packet.message_id)
+                ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                ack_packet = TCPPacket.from_bytes(ack)
                 # print(f'[SENDER]: received ACK {ack_packet}')
-                if ack_packet.type != b'A' or ack_packet.seq != expected_seq:
+                if ack_packet.type != b'A' or ack_packet.message_id != message_id or ack_packet.seq != expected_seq:
                     not_received = True
             except TimeoutError:
                 not_received = True
@@ -186,26 +153,30 @@ class MyTCPProtocol(UDPBasedProtocol):
     def recv(self, n: int):
         print(f'[RECEIVER]: START RECV')
         data = bytearray()
+        message_id = None
         current_seq = 0
 
         while True:
             try:
-                packet = self.recvfrom(GLOBAL_PACKET_LEN, is_receiver=True)
-                #packet = TCPPacket.from_bytes(packet_bytes)
-
-                if packet.message_id in self.receiver_seen_ids:
-                    print('[RECEIVER]: duplicate')
-                    continue
-
-                self.receiver_seen_ids.add(packet.message_id)
+                packet_bytes = self.recvfrom(GLOBAL_PACKET_LEN)
+                packet = TCPPacket.from_bytes(packet_bytes)
+                # if message_id is not None and packet.message_id != message_id:
+                #     print('hasd')
+                # print(f'[RECEIVER]: received {packet}')
                 ############## SYN ##############
-                if packet.type == b'S' and packet.message_id:
+                if message_id is None and packet.type == b'S' and packet.message_id not in self.seen_ids:
+                    message_id = packet.message_id
                     current_seq = packet.seq + 1
                     ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=current_seq)
                     ack_packet_bytes = ack_packet.to_bytes()
                     assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
                     # print(f'[RECEIVER]: sent ACK {ack_packet}')
-                elif packet.type == b'D':
+                elif packet.type == b'S' and packet.message_id == message_id: # kostil
+                    ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=1)
+                    ack_packet_bytes = ack_packet.to_bytes()
+                    assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
+                    # print(f'[RECEIVER]: sent ACK {ack_packet}')
+                elif packet.message_id == message_id and packet.type == b'D':
                     if packet.seq == current_seq:
                         data.extend(packet.data)
                         current_seq += len(packet.data)
@@ -220,16 +191,16 @@ class MyTCPProtocol(UDPBasedProtocol):
                         assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
                         # print(f'[RECEIVER]: sent ACK {ack_packet}')
 
-                elif packet.type == b'F':
+                elif packet.message_id == message_id and packet.type == b'F':
                     if packet.seq == current_seq:
                         current_seq += 1
                         ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=current_seq)
+                        ack_packet_bytes = ack_packet.to_bytes()
                         for _ in range(5): #kostil
-                            ack_packet.reshuffle_id()
-                            ack_packet_bytes = ack_packet.to_bytes()
                             assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
                             # print(f'[RECEIVER]: sent ACK {ack_packet}')
                         
+                        self.seen_ids.add(message_id)
                         print(f'[RECEIVER]: ENV RECV: {len(data)}')
                         return data
 

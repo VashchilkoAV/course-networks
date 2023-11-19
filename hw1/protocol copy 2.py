@@ -86,13 +86,8 @@ class MyTCPProtocol(UDPBasedProtocol):
     def sendto(self, data):
         return super().sendto(data)
     
-    def recvfrom(self, n, is_receiver=False):
-        while True:
-            packet = TCPPacket.from_bytes(super().recvfrom(n))
-            if is_receiver and packet.message_id in self.receiver_seen_ids or not is_receiver and packet.message_id in self.sender_seen_ids:
-                continue
-            else:
-                return packet
+    def recvfrom(self, n):
+        return super().recvfrom(n)
 
     def send(self, data: bytes):
         print(f'[SENDER]: START SEND: {len(data)}')
@@ -111,8 +106,8 @@ class MyTCPProtocol(UDPBasedProtocol):
                 syn_packet_bytes = syn_packet.to_bytes()
                 assert self.sendto(syn_packet_bytes) == len(syn_packet_bytes)
                 # print(f'[SENDER]: sent {syn_packet}')
-                ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                #ack_packet = TCPPacket.from_bytes(ack)
+                ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                ack_packet = TCPPacket.from_bytes(ack)
                 if ack_packet.message_id in self.sender_seen_ids:
                     print('[SENDER]: duplicate')
                     not_received = True
@@ -138,8 +133,8 @@ class MyTCPProtocol(UDPBasedProtocol):
                     packet_bytes = packet.to_bytes()
                     assert self.sendto(packet_bytes) == len(packet_bytes)
                     # print(f'[SENDER]: sent {packet}')
-                    ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                    #ack_packet = TCPPacket.from_bytes(ack)
+                    ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                    ack_packet = TCPPacket.from_bytes(ack)
                     if ack_packet.message_id in self.sender_seen_ids:
                         print('[SENDER]: duplicate')
                         not_received = True
@@ -165,8 +160,8 @@ class MyTCPProtocol(UDPBasedProtocol):
                 fin_packet_bytes = fin_packet.to_bytes()
                 assert self.sendto(fin_packet_bytes) == len(fin_packet_bytes)
                 # print(f'[SENDER]: sent {fin_packet}')
-                ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                #ack_packet = TCPPacket.from_bytes(ack)
+                ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                ack_packet = TCPPacket.from_bytes(ack)
                 if ack_packet.message_id in self.sender_seen_ids:
                     print('[SENDER]: duplicate')
                     not_received = True
@@ -190,8 +185,8 @@ class MyTCPProtocol(UDPBasedProtocol):
 
         while True:
             try:
-                packet = self.recvfrom(GLOBAL_PACKET_LEN, is_receiver=True)
-                #packet = TCPPacket.from_bytes(packet_bytes)
+                packet_bytes = self.recvfrom(GLOBAL_PACKET_LEN)
+                packet = TCPPacket.from_bytes(packet_bytes)
 
                 if packet.message_id in self.receiver_seen_ids:
                     print('[RECEIVER]: duplicate')
