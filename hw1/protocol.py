@@ -81,7 +81,9 @@ class MyTCPProtocol(UDPBasedProtocol):
         self.udp_socket.settimeout(0.005)
         self.sender_seen_ids = set()
         self.receiver_seen_ids = set()
-
+        
+        self.send_count = 0
+        self.recv_count = 0
     
     def sendto(self, data):
         return super().sendto(data)
@@ -95,7 +97,7 @@ class MyTCPProtocol(UDPBasedProtocol):
                 return packet
 
     def send(self, data: bytes):
-        print(f'[SENDER]: START SEND: {len(data)}')
+        print(f'[SENDER]: START SEND: {len(data)}, {self.send_count}')
         current_seq = 0
         expected_seq = 0
 
@@ -179,12 +181,13 @@ class MyTCPProtocol(UDPBasedProtocol):
                 not_received = True
         current_seq = expected_seq
 
-        print(f'[SENDER]: END SEND')
+        print(f'[SENDER]: END SEND {self.send_count}')
+        self.send_count += 1
         return len(data)
 
 
     def recv(self, n: int):
-        print(f'[RECEIVER]: START RECV')
+        print(f'[RECEIVER]: START RECV {self.recv_count}')
         data = bytearray()
         current_seq = 0
 
@@ -230,7 +233,8 @@ class MyTCPProtocol(UDPBasedProtocol):
                             assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
                             # print(f'[RECEIVER]: sent ACK {ack_packet}')
                         
-                        print(f'[RECEIVER]: ENV RECV: {len(data)}')
+                        print(f'[RECEIVER]: END RECV: {len(data)}, {self.recv_count}')
+                        self.recv_count += 1
                         return data
 
                         # while recv ack
