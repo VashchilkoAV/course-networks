@@ -20,100 +20,30 @@ class UDPBasedProtocol:
 GLOBAL_PACKET_LEN = 4096
 GLOBAL_N_REPEAT = 10
 
-class Packet:
-    # 2 bytes -- TYPE, 10 bytes -- ID, 2 bytes -- NUM_PARTS, 2 bytes -- PART_NUM
-    TYPE_LEN = 2
-    ID_LEN = 10
-    PART_NUM_LEN = 2
-    NUM_PARTS_LEN = 2
-    PACKET_LEN = GLOBAL_PACKET_LEN
-    DATA_LEN = PACKET_LEN - ID_LEN - PART_NUM_LEN - NUM_PARTS_LEN - TYPE_LEN
-
-    def __init__(self, data: bytes, type=0):
-        self.current_part = 0
-        if type == 0:
-            self.type = b'DT'
-            self.id = os.urandom(self.ID_LEN)
-            self.num_parts = math.ceil(len(data) / self.DATA_LEN)
-            self.data = [data[i * self.DATA_LEN: (i + 1) * self.DATA_LEN] for i in range(self.num_parts)]
-        elif type == 1:
-            self.type = b'DT'
-            self.id = data[self.TYPE_LEN : self.TYPE_LEN + self.ID_LEN]
-            self.num_parts = int.from_bytes(data[self.TYPE_LEN + self.ID_LEN: self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN], 'big')
-            current_part = int.from_bytes(data[self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN: self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN + self.PART_NUM_LEN], 'big')
-            self.data = [None] * self.num_parts
-            self.data[current_part] = data[self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN + self.PART_NUM_LEN:]
-        elif type == 3:
-            self.type = b'RE'
-            self.id = os.urandom(self.ID_LEN)
-            self.num_parts = 1
-            self.current_part = 0
-            self.data = [data]
-        else:
-            pass
-
-    def __str__(self):
-        return f"id={self.id}, num_parts={self.num_parts}, data={self.data}"
-    
-    def __iter__(self):
-        return self
-    
-    def is_full(self):
-        return all(self.data)
-
-    def __next__(self):
-        if self.current_part < self.num_parts:
-            result = b''.join([
-                self.type,
-                self.id,
-                self.num_parts.to_bytes(self.NUM_PARTS_LEN, 'big'),
-                self.current_part.to_bytes(self.PART_NUM_LEN, 'big'),
-                self.data[self.current_part]
-                ])
-            self.current_part += 1
-            
-            return result
-        else:
-            self.current_part = 0
-            raise StopIteration
-        
-    def to_bytes(self):
-        if self.is_full():
-            return b''.join(self.data)
-        else:
-            raise ValueError("It is not permitted to call to_bytes() method when packet is not full\n")
-        
-    def extend_from_bytes(self, data: bytes):
-        id = data[self.TYPE_LEN: self.TYPE_LEN + self.ID_LEN]
-        num_parts = int.from_bytes(data[self.TYPE_LEN + self.ID_LEN: self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN], 'big')
-        current_part = int.from_bytes(data[self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN: self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN + self.PART_NUM_LEN], 'big')
-        if id == self.id and self.data[current_part] is None:
-            self.data[current_part] = data[self.TYPE_LEN + self.ID_LEN + self.NUM_PARTS_LEN + self.PART_NUM_LEN:]
-            return True
-        else:
-            return False
-
-
 class TCPPacket():
     TYPE_LEN = 1
-    ID_LEN = 3
-    LEN = GLOBAL_PACKET_LEN
-    DATA_LEN = LEN - TYPE_LEN - ID_LEN
+    ID_LEN = 10
+    SEQ_LEN = 4
+    PACKET_LEN = GLOBAL_PACKET_LEN
+    DATA_LEN = PACKET_LEN - TYPE_LEN - ID_LEN - SEQ_LEN
 
-    def __init__(self, type, data=None, id=None):
-        self.id = os.urandom(self.ID_LEN) if id is None else id
-        self.data = b'' if data is None else data
+    def __init__(self, type, seq, message_id, data=None):
+        self.message_id = message_id
         self.type = type
+        self.seq = seq
+
+        self.data = b'' if data is None else data
 
 
     def __str__(self):
-        return f"TYPE={self.type}, ID={self.id}, DATA={self.data}"
+        return f"TYPE={self.type}, SEQ={self.seq}, ID={self.message_id}, DATA len={len(self.data)}"
 
 
     def to_bytes(self):
         return b''.join([
             self.type,
-            self.id,
+            self.seq.to_bytes(self.SEQ_LEN, 'big'),
+            self.message_id,
             self.data,
         ])
     
@@ -122,18 +52,23 @@ class TCPPacket():
     def from_bytes(cls, data):
         return cls(
             type=data[:cls.TYPE_LEN],
-            id=data[cls.TYPE_LEN: cls.TYPE_LEN + cls.ID_LEN],
-            data=data[cls.TYPE_LEN + cls.ID_LEN:]
+            seq=int.from_bytes(data[cls.TYPE_LEN: cls.TYPE_LEN + cls.SEQ_LEN], 'big'),
+            message_id=data[cls.TYPE_LEN + cls.SEQ_LEN: cls.TYPE_LEN + cls.SEQ_LEN + cls.ID_LEN],
+            data=data[cls.TYPE_LEN + cls.SEQ_LEN + cls.ID_LEN:]
         )
     
     @classmethod
-    def divide(cls, data):
+    def divide(cls, data, start_seq, message_id):
         n_parts = math.ceil(len(data) / cls.DATA_LEN)
         ret = []
+        current_seq = start_seq
         for i in range(n_parts):
-            ret.append(cls(b'D', data[i * cls.DATA_LEN: (i + 1) * cls.DATA_LEN]))
+            packet_data = data[i * cls.DATA_LEN: (i + 1) * cls.DATA_LEN]
+            ret.append(cls(type=b'D', data=packet_data, seq=current_seq, message_id=message_id))
+            current_seq += len(packet_data)
 
-        ret.append(cls(b'F'))
+        #ret.append(cls(type=b'F', seq=current_seq, message_id=message_id))
+
         return ret
 
 
@@ -144,51 +79,133 @@ class MyTCPProtocol(UDPBasedProtocol):
         self.seen_ids = set()
 
     def send(self, data: bytes):
-        packets = TCPPacket.divide(data)
+        print(f'[SENDER]: START SEND: {len(data)}')
+        current_seq = 0
+        expected_seq = 0
+        message_id = os.urandom(TCPPacket.ID_LEN)
+
+        ############# SYN #############
+        syn_packet = TCPPacket(type=b'S', seq=current_seq, message_id=message_id)
+        syn_packet_bytes = syn_packet.to_bytes()
+        expected_seq += 1
+
+        not_received = True
+        while not_received:
+            not_received = False
+            try:
+                assert self.sendto(syn_packet_bytes) == len(syn_packet_bytes)
+                print(f'[SENDER]: sent {syn_packet}')
+                ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                ack_packet = TCPPacket.from_bytes(ack)
+                print(f'[SENDER]: received ACK {ack_packet}')
+                if ack_packet.type != b'A' or ack_packet.message_id != message_id or ack_packet.seq != expected_seq:
+                    not_received = True
+            except TimeoutError:
+                not_received = True
+        current_seq = expected_seq
+
+        ############# DATA #############
+        packets = TCPPacket.divide(data, start_seq=current_seq, message_id=message_id)
         for packet in packets:
-            not_received = True
+            expected_seq += len(packet.data)
             packet_bytes = packet.to_bytes()
+
+            not_received = True
             while not_received:
                 not_received = False
                 try:
-                    print(f'[SENDER]: sending {packet}')
                     assert self.sendto(packet_bytes) == len(packet_bytes)
-                    print(f'[SENDER]: {packet} sent, trying to receive ACK')
+                    print(f'[SENDER]: sent {packet}')
                     ack = self.recvfrom(GLOBAL_PACKET_LEN)
                     ack_packet = TCPPacket.from_bytes(ack)
                     print(f'[SENDER]: received ACK {ack_packet}')
-                    if ack_packet.type != b'A' or ack_packet.id != packet.id:
+                    if ack_packet.type != b'A' or ack_packet.message_id != packet.message_id or ack_packet.seq != expected_seq:
                         not_received = True
                 except TimeoutError:
                     not_received = True
 
+            current_seq = expected_seq
+
+        ############# FIN #############
+        fin_packet = TCPPacket(type=b'F', seq=current_seq, message_id=message_id)
+        fin_packet_bytes = fin_packet.to_bytes()
+        expected_seq += 1
+
+        not_received = True
+        while not_received:
+            not_received = False
+            try:
+                assert self.sendto(fin_packet_bytes) == len(fin_packet_bytes)
+                print(f'[SENDER]: sent {fin_packet}')
+                ack = self.recvfrom(GLOBAL_PACKET_LEN)
+                ack_packet = TCPPacket.from_bytes(ack)
+                print(f'[SENDER]: received ACK {ack_packet}')
+                if ack_packet.type != b'A' or ack_packet.message_id != message_id or ack_packet.seq != expected_seq:
+                    not_received = True
+            except TimeoutError:
+                not_received = True
+        current_seq = expected_seq
+
+        print(f'[SENDER]: END SEND')
         return len(data)
 
+
     def recv(self, n: int):
+        print(f'[RECEIVER]: START RECV')
         data = bytearray()
+        message_id = None
+        current_seq = 0
+
         while True:
             try:
-                # print('trying to recieve')
                 packet_bytes = self.recvfrom(GLOBAL_PACKET_LEN)
                 packet = TCPPacket.from_bytes(packet_bytes)
-                if packet.id not in self.seen_ids or packet.type == b'A':
-                    self.seen_ids.add(packet.id)
-                    print(f'[RECEIVER]: received {packet}')
-                    if packet.type == b'D':
+                print(f'[RECEIVER]: received {packet}')
+                ############## SYN ##############
+                if message_id is None and packet.type == b'S' and packet.message_id not in self.seen_ids:
+                    message_id = packet.message_id
+                    current_seq = packet.seq + 1
+                    ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=current_seq)
+                    ack_packet_bytes = ack_packet.to_bytes()
+                    assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
+                    print(f'[RECEIVER]: sent ACK {ack_packet}')
+                elif packet.type == b'S' and packet.message_id == message_id: # kostil
+                    ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=1)
+                    ack_packet_bytes = ack_packet.to_bytes()
+                    assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
+                    print(f'[RECEIVER]: sent ACK {ack_packet}')
+                elif packet.message_id == message_id and packet.type == b'D':
+                    if packet.seq == current_seq:
                         data.extend(packet.data)
-                        ack = TCPPacket(b'A', id=packet.id)
-                        print(f'[RECEIVER]: sending ACK {ack}')
-                        ack_bytes = ack.to_bytes()
-                        assert self.sendto(ack_bytes) == len(ack_bytes)
-                        print(f'[RECEIVER]: {ack} sent')
-                    elif packet.type == b'F':
-                        print('[RECEIVER]: received FIN')
-                        ack = TCPPacket(b'A', id=packet.id)
-                        print(f'[RECEIVER]: sending ACK {ack}')
-                        ack_bytes = ack.to_bytes()
-                        assert self.sendto(ack_bytes) == len(ack_bytes)
-                        print(f'[RECEIVER]: {ack} sent')    
+                        current_seq += len(packet.data)
+                        ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=current_seq)
+                        ack_packet_bytes = ack_packet.to_bytes()
+                        assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
+                        print(f'[RECEIVER]: sent ACK {ack_packet}')
+                    else:
+                        # print(f'wrong seq: curr={current_seq}, pack={packet.seq}')
+                        ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=packet.seq + len(packet.data))
+                        ack_packet_bytes = ack_packet.to_bytes()
+                        assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
+                        print(f'[RECEIVER]: sent ACK {ack_packet}')
+
+                elif packet.message_id == message_id and packet.type == b'F':
+                    if packet.seq == current_seq:
+                        current_seq += 1
+                        ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=current_seq)
+                        ack_packet_bytes = ack_packet.to_bytes()
+                        for _ in range(5): #kostil
+                            assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
+                            print(f'[RECEIVER]: sent ACK {ack_packet}')
+                        
+                        self.seen_ids.add(message_id)
+                        print(f'[RECEIVER]: ENV RECV: {len(data)}')
                         return data
+
+                        # while recv ack
+                    else:
+                        print('wrong seq')
             except:
-                continue
+                pass
+        
                 
