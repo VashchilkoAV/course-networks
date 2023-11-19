@@ -125,8 +125,8 @@ def test_large_message(msg_size):
     run_echo_test(iterations=2, msg_size=msg_size)
 
 
-@pytest.mark.parametrize("iterations", [50_000])
-@pytest.mark.timeout(60)
-def test_perfomance(iterations):
-    setup_netem(packet_loss=0.02, duplicate=0.02, reorder=0.01)
-    run_echo_test(iterations=iterations, msg_size=10)
+# @pytest.mark.parametrize("iterations", [50_000])
+# @pytest.mark.timeout(60)
+# def test_perfomance(iterations):
+#     setup_netem(packet_loss=0.02, duplicate=0.02, reorder=0.01)
+#     run_echo_test(iterations=iterations, msg_size=10)

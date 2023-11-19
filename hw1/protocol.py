@@ -69,7 +69,7 @@ class TCPPacket():
         current_seq = start_seq
         for i in range(n_parts):
             packet_data = data[i * cls.DATA_LEN: (i + 1) * cls.DATA_LEN]
-            ret.append(cls(type=b'D', data=packet_data, seq=current_seq))
+            ret.append(cls(type=b'F' if i == n_parts - 1 else b'D', data=packet_data, seq=current_seq))
             current_seq += len(packet_data)
 
         return ret
@@ -97,35 +97,9 @@ class MyTCPProtocol(UDPBasedProtocol):
                 return packet
 
     def send(self, data: bytes):
-        print(f'[SENDER]: START SEND: {len(data)}, {self.send_count}')
+        # print(f'[SENDER]: START SEND: {len(data)}, {self.send_count}')
         current_seq = 0
         expected_seq = 0
-
-        ############# SYN #############
-        syn_packet = TCPPacket(type=b'S', seq=current_seq)
-        expected_seq += 1
-
-        not_received = True
-        while not_received:
-            not_received = False
-            try:
-                syn_packet.reshuffle_id()
-                syn_packet_bytes = syn_packet.to_bytes()
-                assert self.sendto(syn_packet_bytes) == len(syn_packet_bytes)
-                # print(f'[SENDER]: sent {syn_packet}')
-                ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                #ack_packet = TCPPacket.from_bytes(ack)
-                if ack_packet.message_id in self.sender_seen_ids:
-                    print('[SENDER]: duplicate')
-                    not_received = True
-                    continue
-                self.sender_seen_ids.add(ack_packet.message_id)
-                # print(f'[SENDER]: received ACK {ack_packet}')
-                if ack_packet.type != b'A' or ack_packet.seq != expected_seq:
-                    not_received = True
-            except TimeoutError:
-                not_received = True
-        current_seq = expected_seq
 
         ############# DATA #############
         packets = TCPPacket.divide(data, start_seq=current_seq)
@@ -155,33 +129,7 @@ class MyTCPProtocol(UDPBasedProtocol):
 
             current_seq = expected_seq
 
-        ############# FIN #############
-        fin_packet = TCPPacket(type=b'F', seq=current_seq)
-        expected_seq += 1
-
-        not_received = True
-        while not_received:
-            not_received = False
-            try:
-                fin_packet.reshuffle_id()
-                fin_packet_bytes = fin_packet.to_bytes()
-                assert self.sendto(fin_packet_bytes) == len(fin_packet_bytes)
-                # print(f'[SENDER]: sent {fin_packet}')
-                ack_packet = self.recvfrom(GLOBAL_PACKET_LEN)
-                #ack_packet = TCPPacket.from_bytes(ack)
-                if ack_packet.message_id in self.sender_seen_ids:
-                    print('[SENDER]: duplicate')
-                    not_received = True
-                    continue
-                self.sender_seen_ids.add(ack_packet.message_id)
-                # print(f'[SENDER]: received ACK {ack_packet}')
-                if ack_packet.type != b'A' or ack_packet.seq != expected_seq:
-                    not_received = True
-            except TimeoutError:
-                not_received = True
-        current_seq = expected_seq
-
-        print(f'[SENDER]: END SEND {self.send_count}')
+        # print(f'[SENDER]: END SEND {self.send_count}')
         self.send_count += 1
         return len(data)
 
@@ -201,14 +149,8 @@ class MyTCPProtocol(UDPBasedProtocol):
                     continue
 
                 self.receiver_seen_ids.add(packet.message_id)
-                ############## SYN ##############
-                if packet.type == b'S' and packet.message_id:
-                    current_seq = packet.seq + 1
-                    ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=current_seq)
-                    ack_packet_bytes = ack_packet.to_bytes()
-                    assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
-                    # print(f'[RECEIVER]: sent ACK {ack_packet}')
-                elif packet.type == b'D':
+                
+                if packet.type != b'A':
                     if packet.seq == current_seq:
                         data.extend(packet.data)
                         current_seq += len(packet.data)
@@ -216,6 +158,14 @@ class MyTCPProtocol(UDPBasedProtocol):
                         ack_packet_bytes = ack_packet.to_bytes()
                         assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
                         # print(f'[RECEIVER]: sent ACK {ack_packet}')
+                        if packet.type == b'F':
+                            for _ in range(4):
+                                ack_packet.reshuffle_id()
+                                ack_packet_bytes = ack_packet.to_bytes()
+                                assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
+                            # print(f'[RECEIVER]: END RECV: {len(data)}, {self.recv_count}')
+                            self.recv_count += 1
+                            return data
                     else:
                         # print(f'wrong seq: curr={current_seq}, pack={packet.seq}')
                         ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=packet.seq + len(packet.data))
@@ -223,23 +173,6 @@ class MyTCPProtocol(UDPBasedProtocol):
                         assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
                         # print(f'[RECEIVER]: sent ACK {ack_packet}')
 
-                elif packet.type == b'F':
-                    if packet.seq == current_seq:
-                        current_seq += 1
-                        ack_packet = TCPPacket(type=b'A', message_id=packet.message_id, seq=current_seq)
-                        for _ in range(5): #kostil
-                            ack_packet.reshuffle_id()
-                            ack_packet_bytes = ack_packet.to_bytes()
-                            assert self.sendto(ack_packet_bytes) == len(ack_packet_bytes)
-                            # print(f'[RECEIVER]: sent ACK {ack_packet}')
-                        
-                        print(f'[RECEIVER]: END RECV: {len(data)}, {self.recv_count}')
-                        self.recv_count += 1
-                        return data
-
-                        # while recv ack
-                    else:
-                        print('wrong seq')
             except:
                 pass
         
